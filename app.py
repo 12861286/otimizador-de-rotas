@@ -40,31 +40,37 @@ if uploaded_file is not None:
         n_atual = int(row['Nova_Parada'])
         n_orig = int(row['Stop'])
         
-        # HTML CORRIGIDO: O texto agora fica GARANTIDO na frente da gota
+        # HTML DA GOTA BICOLOR E MENOR
         icon_html = f"""
-            <div style="position: relative; width: 50px; height: 60px;">
-                <svg viewBox="0 0 384 512" style="width: 50px; height: 60px; fill: #007AFF; position: absolute; top: 0; left: 0; z-index: 1;">
-                    <path d="M172.268 501.67C26.97 291.031 0 269.413 0 192 0 85.961 85.961 0 192 0s192 85.961 192 192c0 77.413-26.97 99.031-172.268 309.67-9.535 13.774-29.93 13.773-39.464 0z"/>
+            <div style="position: relative; width: 40px; height: 50px;">
+                <svg viewBox="0 0 384 512" style="width: 40px; height: 50px; position: absolute; top: 0; left: 0; z-index: 1; filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.3));">
+                    <defs>
+                        <linearGradient id="grad{i}" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="50%" style="stop-color:#007AFF;stop-opacity:1" />
+                            <stop offset="50%" style="stop-color:#6c757d;stop-opacity:1" />
+                        </linearGradient>
+                    </defs>
+                    <path fill="url(#grad{i})" d="M172.268 501.67C26.97 291.031 0 269.413 0 192 0 85.961 85.961 0 192 0s192 85.961 192 192c0 77.413-26.97 99.031-172.268 309.67-9.535 13.774-29.93 13.773-39.464 0z"/>
                 </svg>
                 <div style="
                     position: absolute; 
-                    top: 5px; 
-                    width: 50px; 
+                    top: 4px; 
+                    width: 40px; 
                     text-align: center; 
                     color: white; 
                     font-weight: bold; 
-                    font-size: 18px; 
+                    font-size: 14px; 
                     z-index: 2;
                     font-family: Arial;
                 ">{n_atual}</div>
                 <div style="
                     position: absolute; 
-                    top: 28px; 
-                    width: 50px; 
+                    top: 22px; 
+                    width: 40px; 
                     text-align: center; 
                     color: #FFD700; 
                     font-weight: bold; 
-                    font-size: 11px; 
+                    font-size: 9px; 
                     z-index: 2;
                     font-family: Arial;
                 ">{n_orig}</div>
@@ -74,8 +80,8 @@ if uploaded_file is not None:
         folium.Marker(
             location=[row['Latitude'], row['Longitude']],
             icon=folium.DivIcon(
-                icon_size=(50, 60),
-                icon_anchor=(25, 60),
+                icon_size=(40, 50),
+                icon_anchor=(20, 50),
                 html=icon_html
             ),
             popup=f"Nova: {n_atual} | Original: {n_orig}"
