@@ -1,61 +1,89 @@
 import streamlit as st
 import pandas as pd
+import folium
+from streamlit_folium import folium_static
 
-# Título e Configuração Visual (Modo Escuro e Largo)
-st.set_page_config(page_title="Shopee Route Master", layout="wide")
+# Configuração de página
+st.set_page_config(page_title="Circuit Style - Shopee", layout="wide")
 
-# Estilo Futurista via CSS
+# CSS para visual "Dark Mode" e botões grandes
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; color: #00ffcc; }
-    .stButton>button { width: 100%; background-color: #00ffcc; color: black; border-radius: 10px; font-weight: bold; }
-    .delivery-card { border: 1px solid #00ffcc; padding: 15px; border-radius: 15px; margin-bottom: 10px; background-color: #161b22; }
+    .main { background-color: #121212; }
+    .stApp { background-color: #121212; color: #FFFFFF; }
+    .delivery-card { 
+        background-color: #1E1E1E; 
+        padding: 20px; 
+        border-radius: 12px; 
+        border-left: 5px solid #007AFF; 
+        margin-bottom: 15px;
+    }
+    .stop-number {
+        background-color: #007AFF;
+        color: white;
+        padding: 5px 12px;
+        border-radius: 50%;
+        font-weight: bold;
+        margin-right: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚡ Shopee Route Master")
-st.write("---")
+st.title("📍 Rota Shopee Otimizada")
 
-# Pega a chave dos Secrets que você salvou
-try:
-    google_key = st.secrets["GOOGLE_MAPS_API_KEY"]
-except:
-    st.error("Chave API não encontrada nos Secrets!")
-
-uploaded_file = st.file_uploader("📂 Arraste o arquivo da Shopee aqui", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("Subir arquivo da Shopee", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
-    # Lendo os dados do seu arquivo
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     
-    # Resumo no topo
-    total_entregas = len(df)
-    st.metric(label="Pacotes para Entregar", value=total_entregas)
+    # Criando o Mapa com Folium (permite números nos balões)
+    st.subheader("🗺️ Mapa de Percurso")
+    
+    # Centraliza o mapa na primeira entrega
+    centro_lat = df['Latitude'].mean()
+    centro_lon = df['Longitude'].mean()
+    m = folium.Map(location=[centro_lat, centro_lon], zoom_start=14, tiles="cartodbpositron" if False else "OpenStreetMap")
 
-    # Mapa Interativo
-    st.subheader("🗺️ Mapa de Calor da Rota")
-    map_df = df[['Latitude', 'Longitude']].rename(columns={'Latitude': 'lat', 'Longitude': 'lon'})
-    st.map(map_df)
+    for i, row in df.iterrows():
+        # Adiciona marcador com o número da parada
+        folium.Marker(
+            location=[row['Latitude'], row['Longitude']],
+            popup=f"Parada {row['Stop']}\n{row['Destination Address']}",
+            icon=folium.DivIcon(html=f"""
+                <div style="
+                    background-color: #007AFF; 
+                    color: white; 
+                    border-radius: 50%; 
+                    width: 25px; 
+                    height: 25px; 
+                    display: flex; 
+                    justify-content: center; 
+                    align-items: center; 
+                    font-weight: bold;
+                    border: 2px solid white;
+                    shadow: 2px 2px 5px rgba(0,0,0,0.5);
+                ">{row['Stop']}</div>""")
+        ).add_to(m)
 
-    # Lista de Entregas Otimizada
-    st.subheader("📋 Sequência de Entregas")
+    folium_static(m, width=700)
+
+    # Lista de Entregas estilo Circuit
+    st.subheader("📦 Próximas Entregas")
     
     for i, row in df.iterrows():
-        # Criando o "Card" de entrega
         with st.container():
             st.markdown(f"""
             <div class="delivery-card">
-                <span style="font-size: 20px;"><b>Parada {row['Stop']}</b></span><br>
-                <b>Endereço:</b> {row['Destination Address']}<br>
-                <b>Bairro:</b> {row['Bairro']}<br>
-                <b>Pacote:</b> {row['SPX TN']}
+                <span class="stop-number">{row['Stop']}</span>
+                <b style="font-size: 18px;">{row['Destination Address']}</b><br>
+                <span style="color: #BBBBBB;">Bairro: {row['Bairro']} | Pacote: {row['SPX TN']}</span>
             </div>
             """, unsafe_allow_html=True)
             
-            # Botão de navegação em tempo real
-            # Esse link abre o app do Google Maps direto na rota
+            # Botão de Navegação
             lat, lon = row['Latitude'], row['Longitude']
+            # Link otimizado para abrir direto no App do Google Maps/Waze no celular
             maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}&travelmode=driving"
             
-            st.link_button(f"🚀 Iniciar Navegação para Parada {row['Stop']}", maps_url)
-            st.write("") # Espaço entre entregas
+            st.link_button(f"🚀 NAVEGAR PARA PARADA {row['Stop']}", maps_url, use_container_width=True)
+            st.write("")
