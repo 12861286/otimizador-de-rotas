@@ -3,4 +3,6 @@ pandas
 folium
 streamlit-folium
 google-cloud-optimization
+google-auth
+numpy
 openpyxl
