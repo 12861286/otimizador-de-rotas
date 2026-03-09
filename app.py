@@ -6,95 +6,83 @@ import googlemaps
 import numpy as np
 from streamlit_js_eval import get_geolocation
 
-# Setup
+# Setup leve
 st.set_page_config(page_title="Router Master Pro", layout="wide")
 api_key = "AIzaSyD5AiteGn7kOWmdLT3qgF5d1ODaxMxVMAM"
 gmaps = googlemaps.Client(key=api_key)
 
-st.title("🚚 Router Master Pro: Micro-Rotas Reais")
+st.title("🚚 Router Master Pro: Carregamento Rápido")
 
+# Tenta pegar GPS, mas não trava se não conseguir
 loc = get_geolocation()
 uploaded_file = st.file_uploader("Suba sua planilha Shopee", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
     df_raw = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     
-    with st.spinner('Ajustando sequência para evitar contramão e pulos...'):
-        if loc:
-            lat_ini, lon_ini = loc['coords']['latitude'], loc['coords']['longitude']
-        else:
-            lat_ini, lon_ini = df_raw.iloc[0]['Latitude'], df_raw.iloc[0]['Longitude']
+    # Define ponto de partida
+    if loc and 'coords' in loc:
+        lat_i, lon_i = loc['coords']['latitude'], loc['coords']['longitude']
+    else:
+        lat_i, lon_i = df_raw.iloc[0]['Latitude'], df_raw.iloc[0]['Longitude']
 
-        # LÓGICA DE MICRO-ROTAS: Organiza grupos de 5 consultando o Maps
-        def organizar_com_transito_real(df, l_i, o_i):
-            df_temp = df.copy()
-            rota_final = []
-            l_atual, o_atual = l_i, o_i
+    # LÓGICA DE VIZINHO IMEDIATO (Rápida e sem erros)
+    def organizar_sequencia_rapida(df, start_lat, start_lon):
+        temp_df = df.copy()
+        rota = []
+        curr_lat, curr_lon = start_lat, start_lon
+        
+        while not temp_df.empty:
+            # Calcula distância simples para todos os pontos
+            temp_df['d'] = np.sqrt((temp_df['Latitude'] - curr_lat)**2 + (temp_df['Longitude'] - curr_lon)**2)
             
-            while not df_temp.empty:
-                # 1. Pega os 5 mais próximos por distância simples (Candidatos)
-                df_temp['dist'] = np.sqrt((df_temp['Latitude'] - l_atual)**2 + (df_temp['Longitude'] - o_atual)**2)
-                tamanho_bloco = min(5, len(df_temp))
-                bloco = df_temp.nsmallest(tamanho_bloco, 'dist').copy()
-                
-                # 2. Pergunta ao Google a melhor ordem para esses 5
-                destinos = bloco[['Latitude', 'Longitude']].values.tolist()
-                try:
-                    # Otimiza a ordem dentro do pequeno bloco
-                    res = gmaps.directions((l_atual, o_atual), destinos[-1], waypoints=destinos[:-1], optimize_waypoints=True, mode="driving")
-                    ordem_indices = res[0]['waypoint_order']
-                    
-                    # Adiciona na rota final seguindo a ordem do Google
-                    for idx in ordem_indices:
-                        ponto_escolhido = bloco.iloc[idx]
-                        rota_final.append(ponto_escolhido)
-                        df_temp = df_temp.drop(ponto_escolhido.name)
-                    
-                    # Atualiza posição para o último do bloco
-                    ultimo_ponto = bloco.iloc[-1]
-                    l_atual, o_atual = ultimo_ponto['Latitude'], ultimo_ponto['Longitude']
-                except:
-                    # Se falhar, usa proximidade simples para não travar
-                    p_idx = df_temp['dist'].idxmin()
-                    p_e = df_temp.loc[p_idx]
-                    rota_final.append(p_e)
-                    l_atual, o_atual = p_e['Latitude'], p_e['Longitude']
-                    df_temp = df_temp.drop(p_idx)
-                    
-            return pd.DataFrame(rota_final)
+            # Pega o MAIS PRÓXIMO (Isso evita pular o 10 se ele estiver do lado do 9)
+            idx = temp_df['d'].idxmin()
+            ponto = temp_df.loc[idx]
+            rota.append(ponto)
+            
+            # Atualiza posição e remove o ponto
+            curr_lat, curr_lon = ponto['Latitude'], ponto['Longitude']
+            temp_df = temp_df.drop(idx)
+            
+        return pd.DataFrame(rota)
 
-        df_otimizado = organizar_com_transito_real(df_raw, lat_ini, lon_ini)
-        df_otimizado['Nova_Seq'] = range(1, len(df_otimizado) + 1)
+    with st.spinner('Montando mapa...'):
+        df_otimizado = organizar_sequencia_rapida(df_raw, lat_i, lon_i)
+        df_otimizado['Seq'] = range(1, len(df_otimizado) + 1)
 
-        # MAPA
-        m = folium.Map(location=[lat_ini, lon_ini], zoom_start=15)
-        pts_c = [[lat_ini, lon_ini]] + df_otimizado[['Latitude', 'Longitude']].values.tolist()
+        # Cria mapa base
+        m = folium.Map(location=[lat_i, lon_i], zoom_start=15)
 
-        # Desenha a linha azul em blocos de 20 para o Google não reclamar
-        for i in range(0, len(pts_c)-1, 20):
-            fim = min(i + 20, len(pts_c))
-            try:
-                res = gmaps.directions(pts_c[i], pts_c[fim-1], waypoints=pts_c[i+1:fim-1], mode="driving")
-                if res:
-                    poly = googlemaps.convert.decode_polyline(res[0]['overview_polyline']['points'])
-                    folium.PolyLine([(p['lat'], p['lng']) for p in poly], color="#007AFF", weight=6).add_to(m)
-            except: pass
+        # Desenha a linha azul (Apenas para as primeiras 25 para ser instantâneo)
+        proximos = df_otimizado.head(25)
+        pts = [[lat_i, lon_i]] + proximos[['Latitude', 'Longitude']].values.tolist()
+        
+        try:
+            res = gmaps.directions(pts[0], pts[-1], waypoints=pts[1:-1], mode="driving")
+            if res:
+                poly = googlemaps.convert.decode_polyline(res[0]['overview_polyline']['points'])
+                folium.PolyLine([(p['lat'], p['lng']) for p in poly], color="#007AFF", weight=6).add_to(m)
+        except:
+            folium.PolyLine(pts, color="#007AFF", weight=2, dash_array='5').add_to(m)
 
-        # BALÕES
-        for i, row in df_otimizado.iterrows():
-            n_n = int(row['Nova_Seq'])
+        # Renderiza os Balões
+        for _, row in df_otimizado.iterrows():
+            n = int(row['Seq'])
+            cor = "#007AFF" if n <= 25 else "#6c757d"
+            
             icon_html = f'''
-                <div style="width: 42px; height: 52px;">
-                    <svg viewBox="0 0 384 512">
-                        <path fill="#007AFF" d="M172 501C26 291 0 269 0 192 0 85 85 0 192 0s192 85 192 192c0 77-26 99-172 309-9 13-29 13-39 0z"/>
-                        <text x="50%" y="35%" text-anchor="middle" fill="white" font-family="Arial" font-weight="bold" font-size="120">{n_n}</text>
-                    </svg>
-                </div>'''
-            folium.Marker([row['Latitude'], row['Longitude']], icon=folium.DivIcon(icon_size=(42, 52), icon_anchor=(21, 52), html=icon_html)).add_to(m)
+                <div style="width: 40px; height: 40px; background:{cor}; border:2px solid white; border-radius:50%; 
+                display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:14px;">
+                {n}</div>'''
+            folium.Marker([row['Latitude'], row['Longitude']], 
+                          icon=folium.DivIcon(html=icon_html)).add_to(m)
 
-    folium_static(m, width=1100)
+        folium_static(m, width=1100)
 
-    # Botões de Navegação
-    for _, row in df_otimizado.iterrows():
-        with st.expander(f"{int(row['Nova_Seq'])}º — {row['Destination Address']}"):
-            st.link_button("🚗 Abrir Navegação Real", f"google.navigation:q={row['Latitude']},{row['Longitude']}")
+    # Lista de paradas rápida
+    st.subheader("📋 Próximas Entregas")
+    for _, row in df_otimizado.head(15).iterrows():
+        col1, col2 = st.columns([4, 1])
+        col1.write(f"**{int(row['Seq'])}º** — {row['Destination Address']}")
+        col2.link_button("🚗 GPS", f"google.navigation:q={row['Latitude']},{row['Longitude']}")
