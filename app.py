@@ -21,7 +21,7 @@ st.markdown("""
 
 # 2. Conexão com a Chave Fornecida
 # O app tenta pegar do Secrets, se não achar, usa a que você mandou
-api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", "AIzaSyAweRAFUevntLN1wB4GuH45HRlVtolCEvo")
+api_key = st.secrets.get("GOOGLE_MAPS_API_KEY", "AIzaSyD5AiteGn7kOWmdLT3qgF5d1ODaxMxVMAM")
 
 try:
     gmaps = googlemaps.Client(key=api_key)
