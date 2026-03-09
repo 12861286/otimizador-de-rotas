@@ -70,77 +70,78 @@ st.markdown("""
 # MATRIZ DE TEMPO REAL VIA OSRM TABLE API
 # (respeita mão das ruas, sentido de tráfego)
 # ─────────────────────────────────────────────
-def build_osrm_duration_matrix(df, progress_cb=None):
-    """
-    Usa OSRM Table API em blocos de 25 pontos para não travar.
-    Monta a matriz n×n completa combinando os blocos.
-    Fallback para haversine se OSRM falhar.
-    """
-    import urllib.request
-
-    lats = df['Latitude'].values
-    lons = df['Longitude'].values
+def _haversine_matrix(lats, lons):
     n = len(lats)
-    coords_all = [(lons[i], lats[i]) for i in range(n)]
-
-    # Tenta OSRM com todos os pontos de uma vez (funciona bem até ~50 pontos)
-    def osrm_request(src_indices, dst_indices):
-        all_idx = sorted(set(src_indices) | set(dst_indices))
-        idx_map = {v: k for k, v in enumerate(all_idx)}
-        coords_str = ";".join(f"{coords_all[i][0]},{coords_all[i][1]}" for i in all_idx)
-        sources = ";".join(str(idx_map[i]) for i in src_indices)
-        dests   = ";".join(str(idx_map[i]) for i in dst_indices)
-        url = (
-            f"https://router.project-osrm.org/table/v1/driving/{coords_str}"
-            f"?sources={sources}&destinations={dests}&annotations=duration"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "RouterMasterPro/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-        if data.get("code") == "Ok":
-            return np.array(data["durations"], dtype=float)
-        return None
-
-    D = np.full((n, n), 99999.0)
-    np.fill_diagonal(D, 0)
-
-    BLOCK = 20  # blocos de 20 para garantir resposta rápida
-    src_blocks = [list(range(i, min(i+BLOCK, n))) for i in range(0, n, BLOCK)]
-    total_blocks = len(src_blocks)
-
-    osrm_ok = False
-    try:
-        for bi, src_block in enumerate(src_blocks):
-            if progress_cb:
-                progress_cb(bi, total_blocks)
-            mat = osrm_request(src_block, list(range(n)))
-            if mat is not None:
-                for local_i, global_i in enumerate(src_block):
-                    row = mat[local_i]
-                    row = np.where(np.isnan(row), 99999, row)
-                    D[global_i, :] = row
-                osrm_ok = True
-            else:
-                raise Exception("OSRM returned non-Ok")
-    except Exception:
-        osrm_ok = False
-
-    if osrm_ok:
-        return D, "osrm"
-
-    # Fallback haversine (30 km/h)
     D = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
             R = 6371000
             phi1, phi2 = np.radians(lats[i]), np.radians(lats[j])
             dphi = np.radians(lats[j] - lats[i])
-            dlam = np.radians(lons[j] - lons[i])
+            dlam  = np.radians(lons[j] - lons[i])
             a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlam/2)**2
             dist_m = 2 * R * np.arcsin(np.sqrt(a))
             D[i][j] = D[j][i] = dist_m / 8.33
-    return D, "haversine"
+    return D
 
+
+def build_osrm_duration_matrix(df, progress_cb=None):
+    """
+    Tenta OSRM com timeout curto (4s). Se falhar ou demorar → haversine imediato.
+    """
+    import urllib.request
+    import socket
+
+    lats = df['Latitude'].values
+    lons = df['Longitude'].values
+    n = len(lats)
+
+    # Teste de conectividade rápido (2s)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(("router.project-osrm.org", 80))
+        sock.close()
+    except Exception:
+        if progress_cb: progress_cb(1, 1)
+        return _haversine_matrix(lats, lons), "haversine"
+
+    coords_all = [f"{lons[i]},{lats[i]}" for i in range(n)]
+    D = np.full((n, n), 99999.0)
+    np.fill_diagonal(D, 0)
+
+    BLOCK = 15
+    src_blocks = [list(range(i, min(i+BLOCK, n))) for i in range(0, n, BLOCK)]
+    total_blocks = len(src_blocks)
+
+    try:
+        for bi, src_block in enumerate(src_blocks):
+            if progress_cb: progress_cb(bi, total_blocks)
+
+            all_idx    = sorted(set(src_block) | set(range(n)))
+            idx_map    = {v: k for k, v in enumerate(all_idx)}
+            coords_str = ";".join(coords_all[i] for i in all_idx)
+            sources    = ";".join(str(idx_map[i]) for i in src_block)
+            dests      = ";".join(str(idx_map[i]) for i in range(n))
+
+            url = (f"https://router.project-osrm.org/table/v1/driving/{coords_str}"
+                   f"?sources={sources}&destinations={dests}&annotations=duration")
+
+            req = urllib.request.Request(url, headers={"User-Agent": "RouterMasterPro/1.0"})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+
+            if data.get("code") != "Ok":
+                raise ValueError("non-Ok")
+
+            mat = np.array(data["durations"], dtype=float)
+            for li, gi in enumerate(src_block):
+                D[gi, :] = np.where(np.isnan(mat[li]), 99999, mat[li])
+
+        return D, "osrm"
+
+    except Exception:
+        return _haversine_matrix(lats, lons), "haversine"
 def route_distance(route, D):
     return sum(D[route[i]][route[i+1]] for i in range(len(route)-1))
 
