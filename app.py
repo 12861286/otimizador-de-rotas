@@ -67,26 +67,54 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# ALGORITMO DE OTIMIZAÇÃO (Multi-start + 2-opt + Or-opt)
+# MATRIZ DE TEMPO REAL VIA OSRM TABLE API
+# (respeita mão das ruas, sentido de tráfego)
 # ─────────────────────────────────────────────
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlambda = np.radians(lon2 - lon1)
-    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
-    return 2*R*np.arcsin(np.sqrt(a))
+def build_osrm_duration_matrix(df):
+    """
+    Usa OSRM Table API para obter matriz de duração real entre todos os pontos,
+    respeitando sentido das ruas e velocidade média por tipo de via.
+    Retorna matriz n×n em segundos. Se falhar, cai em haversine.
+    """
+    import urllib.request
 
-def build_distance_matrix(df):
-    n = len(df)
-    D = np.zeros((n, n))
     lats = df['Latitude'].values
     lons = df['Longitude'].values
+    n = len(lats)
+
+    coords_str = ";".join(f"{lons[i]},{lats[i]}" for i in range(n))
+    url = (
+        f"https://router.project-osrm.org/table/v1/driving/{coords_str}"
+        f"?annotations=duration"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "RouterMasterPro/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("code") == "Ok":
+            D = np.array(data["durations"], dtype=float)
+            # Substitui None/inf por valor alto
+            D = np.where(np.isnan(D), 99999, D)
+            return D, "osrm"
+    except Exception:
+        pass
+
+    # Fallback: haversine em segundos (assume 30 km/h = 8.33 m/s)
+    D = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
-            d = haversine(lats[i], lons[i], lats[j], lons[j])
-            D[i][j] = D[j][i] = d
-    return D
+            R = 6371000
+            phi1, phi2 = np.radians(lats[i]), np.radians(lats[j])
+            dphi = np.radians(lats[j] - lats[i])
+            dlam = np.radians(lons[j] - lons[i])
+            a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlam/2)**2
+            dist_m = 2 * R * np.arcsin(np.sqrt(a))
+            t = dist_m / 8.33
+            D[i][j] = D[j][i] = t
+    return D, "haversine"
+
+def route_distance(route, D):
+    return sum(D[route[i]][route[i+1]] for i in range(len(route)-1))
 
 def nearest_neighbor(D, start=0):
     n = len(D)
@@ -100,19 +128,13 @@ def nearest_neighbor(D, start=0):
         unvisited.remove(nearest)
     return route
 
-def route_distance(route, D):
-    return sum(D[route[i]][route[i+1]] for i in range(len(route)-1))
-
 def two_opt(route, D):
-    """2-opt completo — roda até não haver mais melhora."""
     best = route[:]
     improved = True
     while improved:
         improved = False
         for i in range(1, len(best) - 2):
             for j in range(i + 2, len(best)):
-                # custo antes: best[i-1]->best[i] + best[j-1]->best[j]
-                # custo depois: best[i-1]->best[j-1] + best[i]->best[j]
                 delta = (
                     - D[best[i-1]][best[i]]   - D[best[j-1]][best[j]]
                     + D[best[i-1]][best[j-1]] + D[best[i]][best[j]]
@@ -123,18 +145,18 @@ def two_opt(route, D):
     return best
 
 def or_opt(route, D, seg_len=1):
-    """Or-opt: move segmentos de tamanho seg_len para a melhor posição."""
     best = route[:]
     improved = True
     while improved:
         improved = False
-        for i in range(1, len(best) - seg_len):
+        n = len(best)
+        for i in range(1, n - seg_len):
             seg = best[i:i+seg_len]
-            # Remove o segmento
             rest = best[:i] + best[i+seg_len:]
+            base = route_distance(best, D)
             for j in range(1, len(rest)):
                 candidate = rest[:j] + seg + rest[j:]
-                if route_distance(candidate, D) < route_distance(best, D) - 1e-10:
+                if route_distance(candidate, D) < base - 1e-10:
                     best = candidate
                     improved = True
                     break
@@ -143,33 +165,29 @@ def or_opt(route, D, seg_len=1):
     return best
 
 def optimize_route_local(df):
-    D = build_distance_matrix(df)
+    D, matrix_source = build_osrm_duration_matrix(df)
     n = len(df)
 
-    # Multi-start: testa começando de vários pontos, fica com o melhor
-    # Usa até 8 starts diferentes para não demorar demais
-    starts = list(range(min(n, 8)))
     best_route = None
-    best_dist = float('inf')
+    best_time  = float('inf')
 
-    for start in starts:
+    # Multi-start com até 8 pontos de partida diferentes
+    for start in range(min(n, 8)):
         route = nearest_neighbor(D, start=start)
-        # Força sempre iniciar pelo ponto 0 (depósito) se não for o start
+        # Garante que depósito (índice 0) sempre seja o início
         if start != 0:
-            # Rotaciona para que o índice 0 fique na frente
             idx0 = route.index(0)
             route = route[idx0:] + route[:idx0]
         route = two_opt(route, D)
-        # Or-opt com segmentos 1, 2 e 3
         for seg in (1, 2, 3):
             route = or_opt(route, D, seg_len=seg)
-        route = two_opt(route, D)  # 2-opt final após or-opt
-        d = route_distance(route, D)
-        if d < best_dist:
-            best_dist = d
+        route = two_opt(route, D)
+        t = route_distance(route, D)
+        if t < best_time:
+            best_time  = t
             best_route = route
 
-    return best_route, best_dist, D
+    return best_route, best_time, D, matrix_source
 
 # ─────────────────────────────────────────────
 # OTIMIZAÇÃO VIA GOOGLE FLEET ROUTING
@@ -484,15 +502,15 @@ if uploaded_file is not None:
                 route_order, error = optimize_route_google(df, credentials_json, project_id)
                 if error:
                     st.warning(f"Google API falhou: {error}\n\nUsando algoritmo local como fallback...")
-                    route_order, total_km, D = optimize_route_local(df)
-                    used_engine = "🧠 Algoritmo Local (fallback)"
+                    route_order, total_km, D, src = optimize_route_local(df)
+                    used_engine = f"🧠 Algoritmo Local fallback ({'OSRM' if src=='osrm' else 'Haversine'})"
                 else:
-                    D = build_distance_matrix(df)
+                    _, _, D, _ = optimize_route_local(df)
                     total_km = route_distance(route_order, D)
                     used_engine = "☁️ Google Fleet Routing"
             else:
-                route_order, total_km, D = optimize_route_local(df)
-                used_engine = "🧠 Algoritmo Local (Nearest Neighbor + 2-opt)"
+                route_order, total_km, D, src = optimize_route_local(df)
+                used_engine = f"🧠 OSRM + 2-opt + Or-opt" if src == "osrm" else "🧠 Algoritmo Local (Haversine)"
 
         # Salva resultado no session_state para sobreviver a re-renders
         _, ordered_df = build_map(df, route_order, use_roads=use_roads)
@@ -526,18 +544,17 @@ if uploaded_file is not None:
         with r1:
             st.markdown(f"""
 <div class="metric-card">
-  <div class="metric-value">{total_km:.1f} km</div>
-  <div class="metric-label">Distância total estimada</div>
+  <div class="metric-value">{int(total_km//3600)}h {int((total_km%3600)//60)}min</div>
+  <div class="metric-label">Duração total da rota</div>
 </div>""", unsafe_allow_html=True)
         with r2:
-            avg_speed = 30
-            tempo_h = total_km / avg_speed
-            horas = int(tempo_h)
-            mins = int((tempo_h - horas) * 60)
+            # total_km aqui é na verdade segundos de duração real
+            horas = int(total_km // 3600)
+            mins  = int((total_km % 3600) // 60)
             st.markdown(f"""
 <div class="metric-card">
   <div class="metric-value">{horas}h {mins}min</div>
-  <div class="metric-label">Tempo estimado (30 km/h)</div>
+  <div class="metric-label">Tempo estimado (ruas reais)</div>
 </div>""", unsafe_allow_html=True)
         with r3:
             st.markdown(f"""
