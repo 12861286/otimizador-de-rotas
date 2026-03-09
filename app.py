@@ -236,42 +236,58 @@ def build_map(df, route_order, use_roads=True):
         opacity=0.85,
     ).add_to(m)
 
-    # ── Marcadores numerados com DivIcon ─────────────────────────────────
-    for idx, (_, row) in enumerate(ordered.iterrows()):
-        numero = idx + 1
-        label  = row.get('Nome', f'Parada {numero}')
+    # ── Marcadores bicolor: topo = ordem otimizada, base = ordem original ──
+    for idx, (original_idx, row) in enumerate(ordered.iterrows()):
+        ordem_otimizada = idx + 1
+        ordem_original  = original_idx + 1
+        label = row.get('Nome', f'Parada {ordem_otimizada}')
 
         if idx == 0:
-            bg, border = '#3fb950', '#2ea043'   # verde — saída
+            cor_topo, cor_base = '#3fb950', '#1a6b2a'
         elif idx == len(ordered) - 1:
-            bg, border = '#f85149', '#da3633'   # vermelho — última
+            cor_topo, cor_base = '#f85149', '#8b1a1a'
         else:
-            bg, border = '#58a6ff', '#1f6feb'   # azul — demais
+            cor_topo, cor_base = '#58a6ff', '#1a3a6b'
 
-        size = 28 if numero < 10 else 32
-        font_size = '13px' if numero < 10 else '11px'
-
+        w = 34
         div_html = f"""
         <div style="
-            width:{size}px; height:{size}px;
-            background:{bg};
-            border: 2.5px solid {border};
-            border-radius: 50%;
+            width:{w}px; height:{w}px;
+            border-radius:50%;
+            overflow:hidden;
+            border:2.5px solid rgba(255,255,255,0.25);
+            box-shadow:0 2px 8px rgba(0,0,0,0.6);
+            display:flex; flex-direction:column;
+            font-family:'Space Grotesk',Arial,sans-serif;
+        ">
+          <div style="
+            flex:1; background:{cor_topo};
             display:flex; align-items:center; justify-content:center;
-            color:#fff; font-weight:700; font-size:{font_size};
-            font-family:'Space Grotesk',sans-serif;
-            box-shadow:0 2px 6px rgba(0,0,0,0.5);
-        ">{numero}</div>
+            color:#fff; font-weight:800; font-size:11px;
+            border-bottom:1px solid rgba(255,255,255,0.3);
+            line-height:1;
+          ">{ordem_otimizada}</div>
+          <div style="
+            flex:1; background:{cor_base};
+            display:flex; align-items:center; justify-content:center;
+            color:rgba(255,255,255,0.8); font-weight:600; font-size:9px;
+            line-height:1;
+          ">{ordem_original}</div>
+        </div>
         """
 
         folium.Marker(
             location=[row['Latitude'], row['Longitude']],
-            popup=folium.Popup(f"<b style='font-size:14px'>#{numero} — {label}</b>", max_width=220),
-            tooltip=f"#{numero} {label}",
+            popup=folium.Popup(
+                f"<b style='font-size:13px'>#{ordem_otimizada} — {label}</b><br>"
+                f"<span style='color:#888;font-size:11px'>Posição original: #{ordem_original}</span>",
+                max_width=230
+            ),
+            tooltip=f"#{ordem_otimizada} {label} (orig #{ordem_original})",
             icon=folium.DivIcon(
                 html=div_html,
-                icon_size=(size, size),
-                icon_anchor=(size // 2, size // 2),
+                icon_size=(w, w),
+                icon_anchor=(w // 2, w // 2),
             )
         ).add_to(m)
 
