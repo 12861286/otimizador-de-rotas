@@ -67,7 +67,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# ALGORITMO DE OTIMIZAÇÃO (Nearest Neighbor + 2-opt)
+# ALGORITMO DE OTIMIZAÇÃO (Multi-start + 2-opt + Or-opt)
 # ─────────────────────────────────────────────
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -100,32 +100,76 @@ def nearest_neighbor(D, start=0):
         unvisited.remove(nearest)
     return route
 
-def two_opt(route, D, max_iter=500):
-    best = route[:]
-    improved = True
-    iterations = 0
-    while improved and iterations < max_iter:
-        improved = False
-        iterations += 1
-        for i in range(1, len(best) - 2):
-            for j in range(i + 1, len(best)):
-                if j - i == 1:
-                    continue
-                new_route = best[:i] + best[i:j][::-1] + best[j:]
-                if route_distance(new_route, D) < route_distance(best, D):
-                    best = new_route
-                    improved = True
-    return best
-
 def route_distance(route, D):
     return sum(D[route[i]][route[i+1]] for i in range(len(route)-1))
 
+def two_opt(route, D):
+    """2-opt completo — roda até não haver mais melhora."""
+    best = route[:]
+    improved = True
+    while improved:
+        improved = False
+        for i in range(1, len(best) - 2):
+            for j in range(i + 2, len(best)):
+                # custo antes: best[i-1]->best[i] + best[j-1]->best[j]
+                # custo depois: best[i-1]->best[j-1] + best[i]->best[j]
+                delta = (
+                    - D[best[i-1]][best[i]]   - D[best[j-1]][best[j]]
+                    + D[best[i-1]][best[j-1]] + D[best[i]][best[j]]
+                )
+                if delta < -1e-10:
+                    best[i:j] = best[i:j][::-1]
+                    improved = True
+    return best
+
+def or_opt(route, D, seg_len=1):
+    """Or-opt: move segmentos de tamanho seg_len para a melhor posição."""
+    best = route[:]
+    improved = True
+    while improved:
+        improved = False
+        for i in range(1, len(best) - seg_len):
+            seg = best[i:i+seg_len]
+            # Remove o segmento
+            rest = best[:i] + best[i+seg_len:]
+            for j in range(1, len(rest)):
+                candidate = rest[:j] + seg + rest[j:]
+                if route_distance(candidate, D) < route_distance(best, D) - 1e-10:
+                    best = candidate
+                    improved = True
+                    break
+            if improved:
+                break
+    return best
+
 def optimize_route_local(df):
     D = build_distance_matrix(df)
-    route = nearest_neighbor(D, start=0)
-    route = two_opt(route, D)
-    total_km = route_distance(route, D)
-    return route, total_km, D
+    n = len(df)
+
+    # Multi-start: testa começando de vários pontos, fica com o melhor
+    # Usa até 8 starts diferentes para não demorar demais
+    starts = list(range(min(n, 8)))
+    best_route = None
+    best_dist = float('inf')
+
+    for start in starts:
+        route = nearest_neighbor(D, start=start)
+        # Força sempre iniciar pelo ponto 0 (depósito) se não for o start
+        if start != 0:
+            # Rotaciona para que o índice 0 fique na frente
+            idx0 = route.index(0)
+            route = route[idx0:] + route[:idx0]
+        route = two_opt(route, D)
+        # Or-opt com segmentos 1, 2 e 3
+        for seg in (1, 2, 3):
+            route = or_opt(route, D, seg_len=seg)
+        route = two_opt(route, D)  # 2-opt final após or-opt
+        d = route_distance(route, D)
+        if d < best_dist:
+            best_dist = d
+            best_route = route
+
+    return best_route, best_dist, D
 
 # ─────────────────────────────────────────────
 # OTIMIZAÇÃO VIA GOOGLE FLEET ROUTING
