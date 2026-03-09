@@ -6,4 +6,3 @@ googlemaps
 numpy
 streamlit-js-eval
 openpyxl
-scikit-learn
