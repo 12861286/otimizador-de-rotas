@@ -175,9 +175,43 @@ def optimize_route_google(df, credentials_json, project_id):
         return None, str(e)
 
 # ─────────────────────────────────────────────
+# ROTA PELAS RUAS REAIS (OSRM — gratuito, sem API key)
+# ─────────────────────────────────────────────
+def get_road_route(coords_lonlat):
+    import urllib.request
+    road_coords = []
+    chunk_size = 25
+    for start in range(0, len(coords_lonlat) - 1, chunk_size - 1):
+        chunk = coords_lonlat[start:start + chunk_size]
+        if len(chunk) < 2:
+            break
+        coords_str = ";".join(f"{lon},{lat}" for lon, lat in chunk)
+        url = (
+            f"https://router.project-osrm.org/route/v1/driving/{coords_str}"
+            f"?overview=full&geometries=geojson&steps=false"
+        )
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "RouterMasterPro/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get("code") == "Ok":
+                geom = data["routes"][0]["geometry"]["coordinates"]
+                segment = [(pt[1], pt[0]) for pt in geom]
+                if road_coords:
+                    road_coords.extend(segment[1:])
+                else:
+                    road_coords.extend(segment)
+            else:
+                road_coords.extend([(lat, lon) for lon, lat in chunk])
+        except Exception:
+            road_coords.extend([(lat, lon) for lon, lat in chunk])
+    return road_coords
+
+
+# ─────────────────────────────────────────────
 # CONSTRUÇÃO DO MAPA
 # ─────────────────────────────────────────────
-def build_map(df, route_order):
+def build_map(df, route_order, use_roads=True):
     ordered = df.iloc[route_order].reset_index(drop=True)
     center_lat = ordered['Latitude'].mean()
     center_lon = ordered['Longitude'].mean()
@@ -188,28 +222,57 @@ def build_map(df, route_order):
         tiles='CartoDB dark_matter'
     )
 
-    # Linha da rota
-    coords = list(zip(ordered['Latitude'], ordered['Longitude']))
+    # ── Traçado da rota ──────────────────────────────────────────────────
+    coords_lonlat = list(zip(ordered['Longitude'], ordered['Latitude']))
+    if use_roads:
+        road_path = get_road_route(coords_lonlat)
+    else:
+        road_path = [(lat, lon) for lon, lat in coords_lonlat]
+
     folium.PolyLine(
-        coords,
+        road_path,
         color='#58a6ff',
-        weight=3,
-        opacity=0.8,
-        dash_array='5 5'
+        weight=4,
+        opacity=0.85,
     ).add_to(m)
 
-    # Marcadores
-    colors = ['#3fb950' if i == 0 else ('#f85149' if i == len(ordered)-1 else '#58a6ff')
-              for i in range(len(ordered))]
-
+    # ── Marcadores numerados com DivIcon ─────────────────────────────────
     for idx, (_, row) in enumerate(ordered.iterrows()):
-        label = row.get('Nome', f'Parada {idx+1}')
-        icon_color = 'green' if idx == 0 else ('red' if idx == len(ordered)-1 else 'blue')
+        numero = idx + 1
+        label  = row.get('Nome', f'Parada {numero}')
+
+        if idx == 0:
+            bg, border = '#3fb950', '#2ea043'   # verde — saída
+        elif idx == len(ordered) - 1:
+            bg, border = '#f85149', '#da3633'   # vermelho — última
+        else:
+            bg, border = '#58a6ff', '#1f6feb'   # azul — demais
+
+        size = 28 if numero < 10 else 32
+        font_size = '13px' if numero < 10 else '11px'
+
+        div_html = f"""
+        <div style="
+            width:{size}px; height:{size}px;
+            background:{bg};
+            border: 2.5px solid {border};
+            border-radius: 50%;
+            display:flex; align-items:center; justify-content:center;
+            color:#fff; font-weight:700; font-size:{font_size};
+            font-family:'Space Grotesk',sans-serif;
+            box-shadow:0 2px 6px rgba(0,0,0,0.5);
+        ">{numero}</div>
+        """
+
         folium.Marker(
             location=[row['Latitude'], row['Longitude']],
-            popup=folium.Popup(f"<b>#{idx+1} — {label}</b>", max_width=200),
-            tooltip=f"#{idx+1} {label}",
-            icon=folium.Icon(color=icon_color, icon='circle', prefix='fa')
+            popup=folium.Popup(f"<b style='font-size:14px'>#{numero} — {label}</b>", max_width=220),
+            tooltip=f"#{numero} {label}",
+            icon=folium.DivIcon(
+                html=div_html,
+                icon_size=(size, size),
+                icon_anchor=(size // 2, size // 2),
+            )
         ).add_to(m)
 
     return m, ordered
@@ -238,6 +301,13 @@ with st.sidebar:
     else:
         project_id = None
         credentials_json = None
+
+    st.markdown("---")
+    use_roads = st.toggle(
+        "🛣️ Traçar rota pelas ruas reais",
+        value=True,
+        help="Usa o OSRM (gratuito, sem API key). Desative se estiver lento."
+    )
 
     st.markdown("---")
     st.markdown("#### Como preparar sua planilha")
@@ -349,7 +419,7 @@ if uploaded_file is not None:
     if st.button("🚀 Otimizar Rota Agora"):
         use_google = "Google" in engine and credentials_json and project_id
 
-        with st.spinner("⚡ Calculando a rota mais eficiente..."):
+        with st.spinner("⚡ Calculando rota otimizada e traçando pelas ruas..."):
             if use_google:
                 route_order, error = optimize_route_google(df, credentials_json, project_id)
                 if error:
@@ -365,7 +435,7 @@ if uploaded_file is not None:
                 used_engine = "🧠 Algoritmo Local (Nearest Neighbor + 2-opt)"
 
         # Salva resultado no session_state para sobreviver a re-renders
-        _, ordered_df = build_map(df, route_order)
+        _, ordered_df = build_map(df, route_order, use_roads=use_roads)
         ordered_df_display = ordered_df.copy()
         ordered_df_display.insert(0, 'Ordem', range(1, len(ordered_df_display)+1))
 
@@ -375,6 +445,7 @@ if uploaded_file is not None:
             "used_engine": used_engine,
             "ordered_df": ordered_df_display,
             "df": df,
+            "use_roads": use_roads,
         }
 
     # ── Exibe resultado persistido ────────────────────────────────────────
@@ -385,6 +456,7 @@ if uploaded_file is not None:
         used_engine  = res["used_engine"]
         ordered_df_display = res["ordered_df"]
         df_res       = res["df"]
+        use_roads_res = res.get("use_roads", True)
 
         st.success(f"✅ Rota otimizada! Motor: **{used_engine}**")
 
@@ -416,7 +488,7 @@ if uploaded_file is not None:
 
         # MAPA — recriado a cada render mas com dados do session_state
         st.markdown("#### 📍 Mapa da Rota Otimizada")
-        mapa, _ = build_map(df_res, route_order)
+        mapa, _ = build_map(df_res, route_order, use_roads=use_roads_res)
         st_folium(mapa, use_container_width=True, height=550, returned_objects=[])
 
         # TABELA DE ORDEM
