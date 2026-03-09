@@ -3,6 +3,4 @@ pandas
 folium
 streamlit-folium
 googlemaps
-requests
-streamlit-js-eval
 openpyxl
