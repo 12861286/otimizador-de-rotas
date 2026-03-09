@@ -1,6 +1,8 @@
 streamlit
 pandas
-googlemaps
-openpyxl
-streamlit-folium
 folium
+streamlit-folium
+googlemaps
+numpy
+streamlit-js-eval
+openpyxl
