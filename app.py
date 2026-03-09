@@ -70,36 +70,65 @@ st.markdown("""
 # MATRIZ DE TEMPO REAL VIA OSRM TABLE API
 # (respeita mão das ruas, sentido de tráfego)
 # ─────────────────────────────────────────────
-def build_osrm_duration_matrix(df):
+def build_osrm_duration_matrix(df, progress_cb=None):
     """
-    Usa OSRM Table API para obter matriz de duração real entre todos os pontos,
-    respeitando sentido das ruas e velocidade média por tipo de via.
-    Retorna matriz n×n em segundos. Se falhar, cai em haversine.
+    Usa OSRM Table API em blocos de 25 pontos para não travar.
+    Monta a matriz n×n completa combinando os blocos.
+    Fallback para haversine se OSRM falhar.
     """
     import urllib.request
 
     lats = df['Latitude'].values
     lons = df['Longitude'].values
     n = len(lats)
+    coords_all = [(lons[i], lats[i]) for i in range(n)]
 
-    coords_str = ";".join(f"{lons[i]},{lats[i]}" for i in range(n))
-    url = (
-        f"https://router.project-osrm.org/table/v1/driving/{coords_str}"
-        f"?annotations=duration"
-    )
-    try:
+    # Tenta OSRM com todos os pontos de uma vez (funciona bem até ~50 pontos)
+    def osrm_request(src_indices, dst_indices):
+        all_idx = sorted(set(src_indices) | set(dst_indices))
+        idx_map = {v: k for k, v in enumerate(all_idx)}
+        coords_str = ";".join(f"{coords_all[i][0]},{coords_all[i][1]}" for i in all_idx)
+        sources = ";".join(str(idx_map[i]) for i in src_indices)
+        dests   = ";".join(str(idx_map[i]) for i in dst_indices)
+        url = (
+            f"https://router.project-osrm.org/table/v1/driving/{coords_str}"
+            f"?sources={sources}&destinations={dests}&annotations=duration"
+        )
         req = urllib.request.Request(url, headers={"User-Agent": "RouterMasterPro/1.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
         if data.get("code") == "Ok":
-            D = np.array(data["durations"], dtype=float)
-            # Substitui None/inf por valor alto
-            D = np.where(np.isnan(D), 99999, D)
-            return D, "osrm"
-    except Exception:
-        pass
+            return np.array(data["durations"], dtype=float)
+        return None
 
-    # Fallback: haversine em segundos (assume 30 km/h = 8.33 m/s)
+    D = np.full((n, n), 99999.0)
+    np.fill_diagonal(D, 0)
+
+    BLOCK = 20  # blocos de 20 para garantir resposta rápida
+    src_blocks = [list(range(i, min(i+BLOCK, n))) for i in range(0, n, BLOCK)]
+    total_blocks = len(src_blocks)
+
+    osrm_ok = False
+    try:
+        for bi, src_block in enumerate(src_blocks):
+            if progress_cb:
+                progress_cb(bi, total_blocks)
+            mat = osrm_request(src_block, list(range(n)))
+            if mat is not None:
+                for local_i, global_i in enumerate(src_block):
+                    row = mat[local_i]
+                    row = np.where(np.isnan(row), 99999, row)
+                    D[global_i, :] = row
+                osrm_ok = True
+            else:
+                raise Exception("OSRM returned non-Ok")
+    except Exception:
+        osrm_ok = False
+
+    if osrm_ok:
+        return D, "osrm"
+
+    # Fallback haversine (30 km/h)
     D = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
@@ -109,8 +138,7 @@ def build_osrm_duration_matrix(df):
             dlam = np.radians(lons[j] - lons[i])
             a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlam/2)**2
             dist_m = 2 * R * np.arcsin(np.sqrt(a))
-            t = dist_m / 8.33
-            D[i][j] = D[j][i] = t
+            D[i][j] = D[j][i] = dist_m / 8.33
     return D, "haversine"
 
 def route_distance(route, D):
@@ -164,8 +192,8 @@ def or_opt(route, D, seg_len=1):
                 break
     return best
 
-def optimize_route_local(df):
-    D, matrix_source = build_osrm_duration_matrix(df)
+def optimize_route_local(df, progress_cb=None):
+    D, matrix_source = build_osrm_duration_matrix(df, progress_cb=progress_cb)
     n = len(df)
 
     best_route = None
@@ -497,21 +525,35 @@ if uploaded_file is not None:
     if st.button("🚀 Otimizar Rota Agora"):
         use_google = "Google" in engine and credentials_json and project_id
 
-        with st.spinner("⚡ Calculando rota otimizada e traçando pelas ruas..."):
-            if use_google:
-                route_order, error = optimize_route_google(df, credentials_json, project_id)
-                if error:
-                    st.warning(f"Google API falhou: {error}\n\nUsando algoritmo local como fallback...")
-                    route_order, total_km, D, src = optimize_route_local(df)
-                    used_engine = f"🧠 Algoritmo Local fallback ({'OSRM' if src=='osrm' else 'Haversine'})"
-                else:
-                    _, _, D, _ = optimize_route_local(df)
-                    total_km = route_distance(route_order, D)
-                    used_engine = "☁️ Google Fleet Routing"
-            else:
-                route_order, total_km, D, src = optimize_route_local(df)
-                used_engine = f"🧠 OSRM + 2-opt + Or-opt" if src == "osrm" else "🧠 Algoritmo Local (Haversine)"
+        prog_bar  = st.progress(0)
+        prog_text = st.empty()
 
+        def update_progress(bi, total):
+            pct = max(1, int((bi / total) * 75))
+            prog_bar.progress(pct)
+            prog_text.markdown(f"🛣️ Consultando OSRM: bloco {bi+1} de {total}...")
+
+        prog_text.markdown("🛣️ Consultando tempos reais de deslocamento via OSRM...")
+
+        if use_google:
+            route_order, error = optimize_route_google(df, credentials_json, project_id)
+            if error:
+                st.warning(f"Google API falhou: {error} — usando algoritmo local...")
+                route_order, total_km, D, src = optimize_route_local(df, progress_cb=update_progress)
+                used_engine = f"🧠 Fallback ({'OSRM' if src=='osrm' else 'Haversine'})"
+            else:
+                _, _, D, _ = optimize_route_local(df, progress_cb=update_progress)
+                total_km = route_distance(route_order, D)
+                used_engine = "☁️ Google Fleet Routing"
+        else:
+            route_order, total_km, D, src = optimize_route_local(df, progress_cb=update_progress)
+            used_engine = "🧠 OSRM + 2-opt + Or-opt" if src == "osrm" else "🧠 Algoritmo Local (Haversine)"
+
+        prog_bar.progress(90)
+        prog_text.markdown("🧠 Finalizando otimização da rota...")
+        prog_bar.progress(100)
+        prog_text.empty()
+        prog_bar.empty()
         # Salva resultado no session_state para sobreviver a re-renders
         _, ordered_df = build_map(df, route_order, use_roads=use_roads)
         ordered_df_display = ordered_df.copy()
