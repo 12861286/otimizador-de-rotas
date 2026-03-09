@@ -341,6 +341,10 @@ if uploaded_file is not None:
 
     st.markdown("---")
 
+    # ── Inicializa session_state ──────────────────────────────────────────
+    if "resultado" not in st.session_state:
+        st.session_state.resultado = None
+
     # BOTÃO DE OTIMIZAÇÃO
     if st.button("🚀 Otimizar Rota Agora"):
         use_google = "Google" in engine and credentials_json and project_id
@@ -360,7 +364,29 @@ if uploaded_file is not None:
                 route_order, total_km, D = optimize_route_local(df)
                 used_engine = "🧠 Algoritmo Local (Nearest Neighbor + 2-opt)"
 
-        st.success(f"✅ Rota otimizada com sucesso! Motor usado: **{used_engine}**")
+        # Salva resultado no session_state para sobreviver a re-renders
+        _, ordered_df = build_map(df, route_order)
+        ordered_df_display = ordered_df.copy()
+        ordered_df_display.insert(0, 'Ordem', range(1, len(ordered_df_display)+1))
+
+        st.session_state.resultado = {
+            "route_order": route_order,
+            "total_km": total_km,
+            "used_engine": used_engine,
+            "ordered_df": ordered_df_display,
+            "df": df,
+        }
+
+    # ── Exibe resultado persistido ────────────────────────────────────────
+    if st.session_state.resultado is not None:
+        res = st.session_state.resultado
+        route_order  = res["route_order"]
+        total_km     = res["total_km"]
+        used_engine  = res["used_engine"]
+        ordered_df_display = res["ordered_df"]
+        df_res       = res["df"]
+
+        st.success(f"✅ Rota otimizada! Motor: **{used_engine}**")
 
         # Métricas da rota
         st.markdown("### 🗺️ Resultado da Otimização")
@@ -372,7 +398,7 @@ if uploaded_file is not None:
   <div class="metric-label">Distância total estimada</div>
 </div>""", unsafe_allow_html=True)
         with r2:
-            avg_speed = 30  # km/h média urbana
+            avg_speed = 30
             tempo_h = total_km / avg_speed
             horas = int(tempo_h)
             mins = int((tempo_h - horas) * 60)
@@ -384,19 +410,17 @@ if uploaded_file is not None:
         with r3:
             st.markdown(f"""
 <div class="metric-card">
-  <div class="metric-value">{len(df)}</div>
+  <div class="metric-value">{len(df_res)}</div>
   <div class="metric-label">Paradas na rota</div>
 </div>""", unsafe_allow_html=True)
 
-        # MAPA
+        # MAPA — recriado a cada render mas com dados do session_state
         st.markdown("#### 📍 Mapa da Rota Otimizada")
-        mapa, ordered_df = build_map(df, route_order)
-        st_folium(mapa, use_container_width=True, height=550)
+        mapa, _ = build_map(df_res, route_order)
+        st_folium(mapa, use_container_width=True, height=550, returned_objects=[])
 
         # TABELA DE ORDEM
         st.markdown("#### 📋 Ordem das Paradas")
-        ordered_df_display = ordered_df.copy()
-        ordered_df_display.insert(0, 'Ordem', range(1, len(ordered_df_display)+1))
         st.dataframe(ordered_df_display, use_container_width=True, height=300)
 
         # EXPORT
