@@ -5,4 +5,5 @@ streamlit-folium
 googlemaps
 numpy
 streamlit-js-eval
+scikit-learn
 openpyxl
