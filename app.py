@@ -209,23 +209,31 @@ def nearest_neighbor(D, start=0):
         route.append(nearest); unvisited.remove(nearest)
     return route
 
-def two_opt(route, D):
+def two_opt(route, D, max_no_improve=200):
+    """2-opt com limite de iterações sem melhora para não travar."""
     best = route[:]
-    improved = True
-    while improved:
+    n = len(best)
+    no_improve = 0
+    while no_improve < max_no_improve:
         improved = False
-        for i in range(1, len(best) - 2):
-            for j in range(i + 2, len(best)):
+        for i in range(1, n - 2):
+            for j in range(i + 2, n):
                 delta = (- D[best[i-1]][best[i]] - D[best[j-1]][best[j]]
                          + D[best[i-1]][best[j-1]] + D[best[i]][best[j]])
                 if delta < -1e-10:
-                    best[i:j] = best[i:j][::-1]; improved = True
+                    best[i:j] = best[i:j][::-1]
+                    improved = True
+        if improved:
+            no_improve = 0
+        else:
+            no_improve += 1
+            break  # sem melhora → para
     return best
 
-def or_opt(route, D, seg_len=1):
+def or_opt(route, D, seg_len=1, max_iter=100):
+    """Or-opt com limite de iterações."""
     best = route[:]
-    improved = True
-    while improved:
+    for _ in range(max_iter):
         improved = False
         n = len(best)
         for i in range(1, n - seg_len):
@@ -237,25 +245,20 @@ def or_opt(route, D, seg_len=1):
                 if route_distance(candidate, D) < base - 1e-10:
                     best = candidate; improved = True; break
             if improved: break
+        if not improved:
+            break
     return best
 
 def optimize_route_local(df, progress_cb=None):
     D, src = build_osrm_duration_matrix(df, progress_cb=progress_cb)
     n = len(df)
-    best_route, best_time = None, float('inf')
-    for start in range(min(n, 8)):
-        route = nearest_neighbor(D, start=start)
-        if start != 0:
-            idx0 = route.index(0)
-            route = route[idx0:] + route[:idx0]
-        route = two_opt(route, D)
-        for seg in (1, 2, 3):
-            route = or_opt(route, D, seg_len=seg)
-        route = two_opt(route, D)
-        t = route_distance(route, D)
-        if t < best_time:
-            best_time = t; best_route = route
-    return best_route, best_time, D, src
+    # Apenas 1 start para evitar timeout no servidor
+    route = nearest_neighbor(D, start=0)
+    route = two_opt(route, D)
+    route = or_opt(route, D, seg_len=1)
+    route = or_opt(route, D, seg_len=2)
+    best_time = route_distance(route, D)
+    return route, best_time, D, src
 
 def optimize_route_google(df, credentials_json, project_id):
     try:
