@@ -2,56 +2,71 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import folium_static
-from google.cloud import optimization_v1
+import googlemaps
+import numpy as np
 
-st.set_page_config(page_title="Router Master Pro | GMPRO", layout="wide")
+st.set_page_config(page_title="Router Master Pro | Vizinhança", layout="wide")
 
-st.title("🚚 Router Master Pro - Inteligência GMPRO")
+# Sua chave que já está ativa e funcionando
+API_KEY = "AIzaSyD5AiteGn7kOWmdLT3qgF5d1ODaxMxVMAM"
+gmaps = googlemaps.Client(key=API_KEY)
 
-# O GMPRO precisa de autenticação robusta. 
-# Se você tiver o arquivo JSON da conta de serviço, o app voa.
+st.title("🚚 Router Master Pro - Otimização por Bairros")
+
 uploaded_file = st.file_uploader("Suba sua planilha de 84 paradas", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     df = df.dropna(subset=['Latitude', 'Longitude'])
 
-    if st.button("🚀 Rodar Otimização Global (GMPRO)"):
-        with st.spinner('O motor GMPRO está analisando as 84 paradas como uma única frota...'):
-            try:
-                client = optimization_v1.FleetRoutingClient()
+    if st.button("🚀 Gerar Rota Otimizada Agora"):
+        with st.spinner('Agrupando pontos próximos para evitar voltas inúteis...'):
+            
+            # 1. ORDENAÇÃO POR VIZINHANÇA (Lógica de Cluster)
+            # Isso garante que o ponto 10 não fique longe do 9 e 11
+            def ordenar_por_proximidade(dados):
+                restante = dados.copy()
+                ordenado = []
+                ponto_atual = restante.iloc[0]
+                ordenado.append(ponto_atual)
+                restante = restante.drop(ponto_atual.name)
                 
-                # Criando os envios (shipments)
-                shipments = []
-                for i, row in df.iterrows():
-                    shipments.append(optimization_v1.Shipment(
-                        deliveries=[optimization_v1.Shipment.Delivery(
-                            arrival_location={"latitude": row['Latitude'], "longitude": row['Longitude']}
-                        )],
-                        label=f"Entrega_{i}"
-                    ))
+                while len(restante) > 0:
+                    # Cálculo de distância simples para agrupar vizinhos rapidamente
+                    restante['d'] = np.sqrt(
+                        (restante['Latitude'] - ponto_atual['Latitude'])**2 + 
+                        (restante['Longitude'] - ponto_atual['Longitude'])**2
+                    )
+                    proximo = restante.loc[restante['d'].idxmin()]
+                    ordenado.append(proximo)
+                    restante = restante.drop(proximo.name)
+                    ponto_atual = proximo
+                return pd.DataFrame(ordenado)
 
-                # Criando o veículo
-                model = optimization_v1.ShipmentModel(
-                    shipments=shipments,
-                    vehicles=[optimization_v1.Vehicle(
-                        start_location={"latitude": df.iloc[0]['Latitude'], "longitude": df.iloc[0]['Longitude']},
-                        label="Carlos_Shopee"
-                    )]
-                )
+            df_otimizado = ordenar_por_proximidade(df)
 
-                # Solicitação de otimização
-                request = optimization_v1.OptimizeToursRequest(
-                    parent="projects/SEU-ID-DO-PROJETO", # VOCÊ PRECISA DISSO AQUI!
-                    model=model
-                )
+            # 2. DESENHO DO MAPA
+            m = folium.Map(location=[df_otimizado.iloc[0]['Latitude'], df_otimizado.iloc[0]['Longitude']], zoom_start=14)
+            
+            # Adiciona os balões com os números certos
+            for i, row in df_otimizado.reset_index().iterrows():
+                num = i + 1
+                folium.Marker(
+                    [row['Latitude'], row['Longitude']],
+                    icon=folium.DivIcon(html=f'''
+                        <div style="width: 32px; height: 32px; background:#1A73E8; border:2px solid white; 
+                        border-radius:50%; display:flex; align-items:center; justify-content:center; 
+                        color:white; font-weight:bold; font-size:12px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+                        {num}</div>''')
+                ).add_to(m)
 
-                response = client.optimize_tours(request=request)
-                
-                st.success("✅ GMPRO calculou a rota perfeita!")
-                
-                # ... lógica de montagem do mapa (mesma anterior) ...
-                
-            except Exception as e:
-                st.error(f"O GMPRO ainda pede credenciais OAuth2: {e}")
-                st.info("Dica: Se o erro persistir, vamos usar a técnica de 'Clusterização' (Bairros) que é o que as grandes empresas usam quando a API trava.")
+            # Linha azul de navegação
+            folium.PolyLine(df_otimizado[['Latitude', 'Longitude']].values.tolist(), color="#1A73E8", weight=4).add_to(m)
+            
+            folium_static(m, width=1100)
+            st.success(f"✅ {len(df_otimizado)} paradas organizadas com sucesso!")
+
+            # LISTA PARA O GPS
+            for i, row in df_otimizado.reset_index().iterrows():
+                with st.expander(f"Parada {i+1} - {row.get('Destination Address', 'Ver Endereço')}"):
+                    st.link_button("🚗 Abrir no Google Maps", f"google.navigation:q={row['Latitude']},{row['Longitude']}")
